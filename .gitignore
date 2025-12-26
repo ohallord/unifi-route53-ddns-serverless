@@ -1,0 +1,17 @@
+# Node.js dependencies
+node_modules/
+
+# Serverless Framework directories
+.serverless/
+
+# Python dependencies
+__pycache__/
+*.pyc
+
+# Local files
+.DS_Store
+.env
+.serverless.yml.swp
+
+# Client-side specific (from old solution)
+client/

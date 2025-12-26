@@ -1,0 +1,53 @@
+# serverless.yml
+
+service: aws-python-ddns
+
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  runtime: python3.11
+  region: us-east-1 # Feel free to change this to your preferred region
+  iam:
+    role:
+      statements:
+        - Effect: 'Allow'
+          Action:
+            - 'route53:ChangeResourceRecordSets'
+          Resource: 'arn:aws:route53:::hostedzone/*'
+        - Effect: 'Allow'
+          Action:
+            - 'route53:ListHostedZones'
+          Resource: '*'
+        - Effect: 'Allow'
+          Action:
+            - 'secretsmanager:GetSecretValue'
+          Resource: !Ref DDNSCredentialsSecret
+
+# Custom variables. You MUST fill these in before deploying.
+custom:
+  hostname: "${param:hostName}" 
+
+functions:
+  updateIp:
+    handler: src/handler.lambda_handler
+    description: Updates a Route 53 'A' record to emulate a No-IP compatible DDNS provider.
+    environment:
+      HOSTNAME: ${self:custom.hostname}
+      DDNS_SECRET_NAME: !Ref DDNSCredentialsSecret
+    events:
+      - http:
+          path: update
+          method: put
+      - http:
+          path: update
+          method: get
+
+resources:
+  Resources:
+    DDNSCredentialsSecret:
+      Type: AWS::SecretsManager::Secret
+      Properties:
+        Name: !Sub /ddns/${self:service}/${sls:stage}
+        Description: "DDNS credentials for the UniFi UDM Pro"
+        SecretString: '{"username": "${param:ddnsUsername}", "password": "${param:ddnsPassword}"}' # <-- IMPORTANT: Provide via --param flag during deploy
