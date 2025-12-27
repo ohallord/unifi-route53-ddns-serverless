@@ -172,5 +172,3 @@ If you wish to remove all deployed AWS resources, navigate to the project's root
 serverless remove
 ```
 This will tear down the CloudFormation stack and all associated resources, including the Lambda function, API Gateway, and the Secrets Manager secret.
-# unifi-route53-ddns-serverless
-# unifi-route53-ddns-serverless
