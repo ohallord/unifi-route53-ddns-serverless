@@ -132,24 +132,24 @@ custom https://YOUR_API_GATEWAY_ENDPOINT {
 You can test your new DDNS endpoint from the command line using `curl`. This command emulates the request your UniFi gateway will send.
 
 Replace the placeholder values with your actual information:
-*   `YOUR_USERNAME` and `YOUR_PASSWORD` with the credentials from your AWS Secret.
+*   `YOUR_BASE64_AUTH_STRING` with the Base64 encoded string of your "username:password" (e.g., `echo -n "username:password" | base64`).
 *   `YOUR_HOSTNAME` with the hostname you are updating.
 *   `YOUR_IP` with the IP address you want to set.
 *   `YOUR_ENDPOINT_URL` with the full API Gateway endpoint URL.
 
 ```bash
 curl -X GET \
-  -H "User-Agent: UniFi/1.0" \
-  --user "YOUR_USERNAME:YOUR_PASSWORD" \
+  -H "User-Agent: YourApp/1.0" \
+  -H "Authorization: Basic YOUR_BASE64_AUTH_STRING" \
   "YOUR_ENDPOINT_URL?hostname=YOUR_HOSTNAME&myip=YOUR_IP"
 ```
 
 **Example:**
 ```bash
-curl -X GET \
-  -H "User-Agent: UniFi/1.0" \
-  --user "myddnsuser:MySecurePassword123" \
-  "https://adu4crry4l.execute-api.us-east-1.amazonaws.com/dev/update?hostname=home.yourdomain.com&myip=8.8.8.8"
+curl -v -X GET \
+  'https://YOUR_API_GATEWAY_ID.execute-api.YOUR_REGION.amazonaws.com/dev/update?hostname=your.domain.com&myip=192.0.2.1' \
+  -H 'Authorization: Basic YOUR_BASE64_ENCODED_CREDENTIALS' \
+  -H 'User-Agent: YourApp/1.0'
 ```
 
 You should receive a response like `good 8.8.8.8` if the update was successful, or `nochg 8.8.8.8` if the IP address was already up to date.
