@@ -49,7 +49,7 @@ Open the `serverless.yml` file. You must update two sections:
     custom:
       hostname: 'home.yourdomain.com'     # <-- IMPORTANT: Replace with the FQDN you want to update
     ```
-    *   **`hostname`**: The full domain name (e.g., `ddns.example.com`) that the Lambda will update. The Hosted Zone ID will be dynamically determined by the Lambda function based on this hostname.
+    *   **`hostname`**: The full domain name (e.g., `ddns.example.com`) for your serverless DDNS setup that the Lambda will update. The Hosted Zone ID will be dynamically determined by the Lambda function based on this hostname.
 
 2.  **`resources` section (Credentials)**:
     This section defines the AWS Secrets Manager secret that will store your DDNS credentials. The `SecretString` will now dynamically fetch the username and password, ideally passed in at deploy time.
