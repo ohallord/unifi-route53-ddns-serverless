@@ -156,6 +156,14 @@ curl -v -X GET \
 
 You should receive a response like `good 8.8.8.8` if the update was successful, or `nochg 8.8.8.8` if the IP address was already up to date.
 
+## Project Origin and References
+
+This project is inspired by and compatible with `inadyn`, a small and simple Dynamic DNS (DDNS) client.
+
+*   **inadyn Project Home**: [https://troglobit.com/projects/inadyn/](https://troglobit.com/projects/inadyn/)
+*   **inadyn GitHub Repository**: [https://github.com/troglobit/inadyn](https://github.com/troglobit/inadyn)
+*   **inadyn Custom Providers Documentation**: [https://github.com/troglobit/inadyn?tab=readme-ov-file#custom-ddns-providers](https://github.com/troglobit/inadyn?tab=readme-ov-file#custom-ddns-providers)
+
 ## Cleaning Up
 
 If you wish to remove all deployed AWS resources, navigate to the project's root directory and run:
