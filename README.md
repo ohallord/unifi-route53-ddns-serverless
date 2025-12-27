@@ -47,7 +47,7 @@ Open the `serverless.yml` file. You must update two sections:
 1.  **`custom` section**:
     ```yaml
     custom:
-      hostname: 'home.yourdomain.com'     # <-- IMPORTANT: Replace with the FQDN you want to update
+      hostname: '${param:hostName}'     # <-- IMPORTANT: Replace with the FQDN you want to update
     ```
     *   **`hostname`**: The full domain name (e.g., `ddns.example.com`) for your serverless DDNS setup that the Lambda will update. The Hosted Zone ID will be dynamically determined by the Lambda function based on this hostname.
 
@@ -74,6 +74,7 @@ Pass the credentials directly in the `serverless deploy` command using the `--pa
 
 ```bash
 serverless deploy \
+  --param="hostName=your.domain.com" \
   --param="ddnsUsername=your_real_username" \
   --param="ddnsPassword=your_super_secret_password"
 ```
@@ -83,6 +84,7 @@ serverless deploy \
 Set local environment variables in your shell before running the deploy command.
 
 ```bash
+export HOST_NAME="your.domain.com"
 export DDNS_USERNAME="your_real_username"
 export DDNS_PASSWORD="your_super_secret_password"
 serverless deploy
