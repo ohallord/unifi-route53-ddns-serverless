@@ -29,6 +29,10 @@ custom:
   hostname: "${param:hostName}" 
 
 functions:
+  authorizer:
+    handler: src/handler.authorizer_handler
+    environment:
+      DDNS_SECRET_NAME: !Ref DDNSCredentialsSecret
   updateIp:
     handler: src/handler.lambda_handler
     description: Updates a Route 53 'A' record to emulate a No-IP compatible DDNS provider.
@@ -37,11 +41,13 @@ functions:
       DDNS_SECRET_NAME: !Ref DDNSCredentialsSecret
     events:
       - http:
-          path: update
-          method: put
-      - http:
-          path: update
-          method: get
+          path: /{proxy+}
+          method: any
+          authorizer:
+            name: authorizer
+            type: request
+            identitySource:
+              - method.request.header.Authorization
 
 resources:
   Resources:

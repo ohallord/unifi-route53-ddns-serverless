@@ -5,6 +5,7 @@ import json
 import os
 import logging
 import boto3
+import re
 
 # Configure logging
 logger = logging.getLogger()
@@ -13,6 +14,69 @@ logger.setLevel(logging.INFO)
 # Initialize Boto3 clients
 route53 = boto3.client('route53')
 secretsmanager = boto3.client('secretsmanager')
+
+
+def _generate_policy(principal_id, effect, resource):
+    """
+    Helper function to generate an IAM policy.
+    """
+    return {
+        'principalId': principal_id,
+        'policyDocument': {
+            'Version': '2012-10-17',
+            'Statement': [{
+                'Action': 'execute-api:Invoke',
+                'Effect': effect,
+                'Resource': resource,
+            }]
+        }
+    }
+
+
+def authorizer_handler(event, context):
+    """
+    Handles API Gateway Lambda authorizer requests.
+    This function performs HTTP Basic authentication.
+    """
+    logger.info(f"Authorizer event: {json.dumps(event)}")
+    auth_header = event.get('headers', {}).get('Authorization')
+    
+    if not auth_header or not auth_header.lower().startswith('basic '):
+        logger.warning("Missing or invalid Authorization header")
+        # In case of no auth header, API Gateway returns a 401 Unauthorized
+        # response. We don't need to explicitly return a policy.
+        # However, if you want to return a custom response, you can do so here.
+        # For simplicity, we let API Gateway handle it.
+        # To deny, you can `raise Exception('Unauthorized')`
+        return _generate_policy('user', 'Deny', event['methodArn'])
+
+    try:
+        # Get credentials from Secrets Manager
+        secret_name = os.environ['DDNS_SECRET_NAME']
+        secret_value = secretsmanager.get_secret_value(SecretId=secret_name)
+        ddns_creds = json.loads(secret_value['SecretString'])
+        ddns_user = ddns_creds['username']
+        ddns_pass = ddns_creds['password']
+
+        # Get credentials from request
+        auth_creds_b64 = auth_header.split(' ')[1]
+        decoded_creds = base64.b64decode(auth_creds_b64).decode('utf-8')
+        username, password = decoded_creds.split(':', 1)
+
+        # Compare credentials
+        if username == ddns_user and password == ddns_pass:
+            logger.info("Authentication successful")
+            return _generate_policy(username, 'Allow', event['methodArn'])
+        else:
+            logger.warning("Invalid username or password")
+            return _generate_policy(username, 'Deny', event['methodArn'])
+
+    except Exception as e:
+        logger.error(f"Authentication error in authorizer: {e}")
+        # Raising an exception will cause a 500 Internal Server Error response
+        # from API Gateway. For security, it's better to return a Deny policy.
+        return _generate_policy('user', 'Deny', event['methodArn'])
+
 
 def find_hosted_zone_id(hostname):
     """
@@ -55,76 +119,40 @@ def lambda_handler(event, context):
 
     headers_lower = {k.lower(): v for k, v in event.get('headers', {}).items()}
 
-    # --- 1. Authentication ---
-    try:
-        # Get credentials from Secrets Manager
-        secret_name = os.environ['DDNS_SECRET_NAME']
-        secret_value = secretsmanager.get_secret_value(SecretId=secret_name)
-        ddns_creds = json.loads(secret_value['SecretString'])
-        ddns_user = ddns_creds['username']
-        ddns_pass = ddns_creds['password']
-
-        # Get credentials from request
-        auth_header = headers_lower.get('authorization')
-        if not auth_header or not auth_header.lower().startswith('basic '):
-            logger.warning("Missing or invalid Authorization header")
-            return {'statusCode': 401, 'body': 'badauth'}
-
-        auth_creds_b64 = auth_header.split(' ')[1]
-        decoded_creds = base64.b64decode(auth_creds_b64).decode('utf-8')
-        username, password = decoded_creds.split(':', 1)
-
-        # Compare credentials
-        if username != ddns_user or password != ddns_pass:
-            logger.warning("Invalid username or password")
-            return {'statusCode': 401, 'body': 'badauth'}
-
-    except Exception as e:
-        logger.error(f"Authentication error: {e}")
-        return {'statusCode': 401, 'body': 'badauth'}
-
-    # --- 2. User-Agent Check ---
+    # --- 1. User-Agent Check ---
     user_agent = headers_lower.get('user-agent')
     if not user_agent:
         logger.warning("Missing User-Agent header")
         return {'statusCode': 400, 'body': 'badagent'}
 
 
-    # --- 3. Get Parameters ---
+    # --- 2. Get Parameters ---
     hostname = None
     new_ip = None
-    http_method = event.get('httpMethod')
+    params = event.get('queryStringParameters') if event.get('queryStringParameters') is not None else {}
+    
+    # Standard dyndns2 behavior: get 'hostname' from query params
+    hostname = params.get('hostname')
+    
+    # Fallback for inadyn custom type: parse from path
+    # e.g., path can be /update/your.hostname.com or /updatedrohalloran.net from user log
+    if not hostname:
+        path = event.get('path', '')
+        # This regex will look for a domain name-like string in the path
+        match = re.search(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', path)
+        if match:
+            hostname = match.group(1)
+            logger.info(f"Extracted hostname '{hostname}' from path '{path}'")
 
-    if http_method == 'GET':
-        params = event.get('queryStringParameters', {})
-        hostname = params.get('hostname')
-        new_ip = params.get('myip', event.get('requestContext', {}).get('http', {}).get('sourceIp'))
-        if not hostname or not new_ip:
-            logger.error("Missing 'hostname' or 'myip' query parameters for GET request.")
-            return {'statusCode': 400, 'body': 'badreq'}
-    elif http_method == 'PUT':
-        try:
-            if 'body' not in event or not event['body']:
-                logger.error("Missing request body for PUT request.")
-                return {'statusCode': 400, 'body': 'badreq'}
+    # Get IP address
+    # Inadyn can send 'myip' in query string
+    # Also handle source IP from API Gateway context
+    new_ip = params.get('myip', event.get('requestContext', {}).get('identity', {}).get('sourceIp'))
 
-            body = json.loads(event['body'])
-            hostname = body.get('hostname')
-            # Prioritize 'myip' from body, fallback to source IP
-            new_ip = body.get('myip', event.get('requestContext', {}).get('http', {}).get('sourceIp'))
-            if not hostname or not new_ip:
-                logger.error("Missing 'hostname' or 'myip' parameters in request body for PUT request.")
-                return {'statusCode': 400, 'body': 'badreq'}
-
-        except json.JSONDecodeError:
-            logger.error("Invalid JSON in request body for PUT request.")
-            return {'statusCode': 400, 'body': 'badreq'}
-        except Exception as e:
-            logger.error(f"Error parsing request body for PUT request: {e}")
-            return {'statusCode': 400, 'body': 'badreq'}
-    else:
-        logger.error(f"Unsupported HTTP method: {http_method}")
-        return {'statusCode': 405, 'body': 'methodnotallowed'}
+    if not hostname or not new_ip:
+        error_msg = "Missing 'hostname' or 'myip' parameters."
+        logger.error(error_msg)
+        return {'statusCode': 400, 'body': 'badreq'}
 
     # Dynamically find the Hosted Zone ID
     hosted_zone_id = find_hosted_zone_id(hostname)
@@ -132,7 +160,7 @@ def lambda_handler(event, context):
         logger.error(f"Could not determine Hosted Zone ID for hostname: {hostname}")
         return {'statusCode': 500, 'body': '911'} # Internal server error
 
-    # --- 4. Check Current DNS Record ---
+    # --- 3. Check Current DNS Record ---
     try:
         response = route53.list_resource_record_sets(
             HostedZoneId=hosted_zone_id,
@@ -141,6 +169,7 @@ def lambda_handler(event, context):
             MaxItems='1'
         )
         record_sets = response.get('ResourceRecordSets', [])
+        # Ensure the record found is an exact match for the hostname
         if record_sets and record_sets[0]['Name'] == f"{hostname}.":
             current_ip = record_sets[0]['ResourceRecords'][0]['Value']
             if current_ip == new_ip:
@@ -150,7 +179,7 @@ def lambda_handler(event, context):
         logger.warning(f"Could not retrieve current DNS record for {hostname}: {e}")
         # Proceed to update anyway
 
-    # --- 5. Update DNS Record ---
+    # --- 4. Update DNS Record ---
     logger.info(f"Attempting to update {hostname} to {new_ip} in zone {hosted_zone_id}")
     try:
         route53.change_resource_record_sets(

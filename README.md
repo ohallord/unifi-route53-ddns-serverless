@@ -111,6 +111,22 @@ In your UniFi Network application, navigate to **Settings > Internet > [Your WAN
 
 Save the settings. Your UniFi gateway will now automatically update your Route 53 record whenever its public IP changes.
 
+## Configuring `inadyn`
+
+If you are using `inadyn` directly (e.g., on a device that supports a custom provider configuration), you can use a configuration similar to this. This example leverages the `%h` (hostname) and `%i` (IP address) variables provided by `inadyn` in the `ddns-path`.
+
+Replace `YOUR_API_GATEWAY_ENDPOINT`, `your.example.com`, `your_username`, and `your_password` with your actual values. Remember that `YOUR_API_GATEWAY_ENDPOINT` should be the full domain of your API Gateway (e.g., `u679stz5ig.execute-api.us-east-1.amazonaws.com`).
+
+```ini
+custom https://YOUR_API_GATEWAY_ENDPOINT {
+    hostname = "your.example.com"
+    username = "your_username"
+    password = "your_password"
+    ddns-server = "YOUR_API_GATEWAY_ENDPOINT"
+    ddns-path = "/dev/update?hostname=%h&myip=%i"
+}
+```
+
 ## Testing with `curl`
 
 You can test your new DDNS endpoint from the command line using `curl`. This command emulates the request your UniFi gateway will send.
