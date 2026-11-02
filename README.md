@@ -1,5 +1,9 @@
 # Serverless Dynamic DNS (DDNS) for UniFi & Inadyn Clients
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python](https://img.shields.io/badge/python-3.x-blue.svg) ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20%7C%20API%20Gateway%20%7C%20Route%2053-orange.svg) ![Serverless Framework](https://img.shields.io/badge/IaC-Serverless%20Framework-red.svg)
+
+> Self-hosted dynamic DNS for UniFi Dream Machine (UDM, UDM Pro, UDR, UCG) and USG gateways using AWS Route 53, with no DDNS subscription, no container and no script on your network. A serverless No-IP-compatible endpoint (Lambda + API Gateway + Secrets Manager) that also works with any inadyn client. It's a free alternative to No-IP, DynDNS and DuckDNS for people who already host their domain in Route 53.
+
 This project provides a serverless, secure, and cost-effective Dynamic DNS (DDNS) endpoint on AWS. It is designed to be compatible with `inadyn`-based clients, most notably the Ubiquiti UniFi Dream Machine (UDM) series, by emulating the popular No-IP update protocol.
 
 Instead of running a client script on your local network, your UniFi gateway can directly and securely update a Route 53 DNS record with its new public IP address.
