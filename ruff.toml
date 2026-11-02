@@ -1,0 +1,8 @@
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "B", "S", "I"]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "E402", "I001"]

@@ -1,207 +1,240 @@
 # src/handler.py
+"""No-IP / dyndns2 compatible DDNS endpoint backed by Route 53.
+
+Security notes:
+- Request events are never logged in full: they carry the Basic auth header.
+- Only the hostname configured at deploy time (DDNS_HOSTNAME) may be updated.
+- Credentials are compared in constant time.
+"""
 
 import base64
+import binascii
+import hmac
+import ipaddress
 import json
-import os
 import logging
-import boto3
+import os
 import re
+import time
 
-# Configure logging
+import boto3
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Initialize Boto3 clients
 route53 = boto3.client('route53')
 secretsmanager = boto3.client('secretsmanager')
 
+SECRET_CACHE_TTL_SECONDS = 300
+_secret_cache = {}
 
-def _generate_policy(principal_id, effect, resource):
+# RFC 1123 hostname: labels of 1-63 alnum/hyphen chars, not starting/ending with '-'.
+_HOSTNAME_RE = re.compile(
+    r'^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+)
+_PATH_HOSTNAME_RE = re.compile(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})')
+
+
+class Unauthorized(Exception):  # noqa: N818
+    """API Gateway maps a Lambda error whose message is exactly 'Unauthorized' to HTTP 401."""
+
+    def __init__(self):
+        super().__init__('Unauthorized')
+
+
+def _headers_lower(event):
+    return {k.lower(): v for k, v in (event.get('headers') or {}).items()}
+
+
+def _normalize_hostname(hostname):
+    if not isinstance(hostname, str):
+        return None
+    hostname = hostname.strip().rstrip('.').lower()
+    return hostname if _HOSTNAME_RE.match(hostname) else None
+
+
+def _get_credentials():
+    """Fetch DDNS credentials from Secrets Manager, cached per container."""
+    now = time.monotonic()
+    cached = _secret_cache.get('creds')
+    if cached and now - cached[0] < SECRET_CACHE_TTL_SECONDS:
+        return cached[1]
+    secret = secretsmanager.get_secret_value(SecretId=os.environ['DDNS_SECRET_NAME'])
+    data = json.loads(secret['SecretString'])
+    creds = (str(data['username']), str(data['password']))
+    _secret_cache['creds'] = (now, creds)
+    return creds
+
+
+def _api_wide_resource(method_arn):
+    """arn:...:apiId/stage/VERB/path -> arn:...:apiId/stage/*/*
+
+    The authorizer result is cached by Authorization header, so the policy must
+    cover every method/path of the stage or cached Allows fail on other paths.
     """
-    Helper function to generate an IAM policy.
-    """
+    arn_prefix, _, path = method_arn.partition(':execute-api:')
+    region_account_api, _, rest = path.partition('/')
+    stage = rest.split('/', 1)[0]
+    return f"{arn_prefix}:execute-api:{region_account_api}/{stage}/*/*"
+
+
+def _allow_policy(principal_id, method_arn):
     return {
         'principalId': principal_id,
         'policyDocument': {
             'Version': '2012-10-17',
             'Statement': [{
                 'Action': 'execute-api:Invoke',
-                'Effect': effect,
-                'Resource': resource,
-            }]
-        }
+                'Effect': 'Allow',
+                'Resource': _api_wide_resource(method_arn),
+            }],
+        },
     }
 
 
 def authorizer_handler(event, context):
+    """API Gateway REQUEST authorizer performing HTTP Basic authentication.
+
+    Raising 'Unauthorized' makes API Gateway return 401, which DDNS clients
+    report as an authentication failure.
     """
-    Handles API Gateway Lambda authorizer requests.
-    This function performs HTTP Basic authentication.
-    """
-    logger.info(f"Authorizer event: {json.dumps(event)}")
-    auth_header = event.get('headers', {}).get('Authorization')
-    
-    if not auth_header or not auth_header.lower().startswith('basic '):
-        logger.warning("Missing or invalid Authorization header")
-        # In case of no auth header, API Gateway returns a 401 Unauthorized
-        # response. We don't need to explicitly return a policy.
-        # However, if you want to return a custom response, you can do so here.
-        # For simplicity, we let API Gateway handle it.
-        # To deny, you can `raise Exception('Unauthorized')`
-        return _generate_policy('user', 'Deny', event['methodArn'])
+    auth_header = _headers_lower(event).get('authorization') or ''
+    scheme, _, encoded = auth_header.partition(' ')
+    if scheme.lower() != 'basic' or not encoded.strip():
+        logger.warning("Missing or non-Basic Authorization header")
+        raise Unauthorized
 
     try:
-        # Get credentials from Secrets Manager
-        secret_name = os.environ['DDNS_SECRET_NAME']
-        secret_value = secretsmanager.get_secret_value(SecretId=secret_name)
-        ddns_creds = json.loads(secret_value['SecretString'])
-        ddns_user = ddns_creds['username']
-        ddns_pass = ddns_creds['password']
+        decoded = base64.b64decode(encoded.strip(), validate=True).decode('utf-8')
+    except (binascii.Error, UnicodeDecodeError):
+        logger.warning("Malformed Basic credentials")
+        raise Unauthorized from None
+    username, sep, password = decoded.partition(':')
+    if not sep:
+        logger.warning("Malformed Basic credentials")
+        raise Unauthorized
 
-        # Get credentials from request
-        auth_creds_b64 = auth_header.split(' ')[1]
-        decoded_creds = base64.b64decode(auth_creds_b64).decode('utf-8')
-        username, password = decoded_creds.split(':', 1)
+    try:
+        expected_user, expected_pass = _get_credentials()
+    except Exception as e:  # fail closed
+        logger.error(f"Could not load DDNS credentials: {type(e).__name__}")
+        raise Unauthorized from None
 
-        # Compare credentials
-        if username == ddns_user and password == ddns_pass:
-            logger.info("Authentication successful")
-            return _generate_policy(username, 'Allow', event['methodArn'])
-        else:
-            logger.warning("Invalid username or password")
-            return _generate_policy(username, 'Deny', event['methodArn'])
+    user_ok = hmac.compare_digest(username.encode(), expected_user.encode())
+    pass_ok = hmac.compare_digest(password.encode(), expected_pass.encode())
+    if user_ok and pass_ok:
+        logger.info("Authentication successful")
+        return _allow_policy(expected_user, event['methodArn'])
 
-    except Exception as e:
-        logger.error(f"Authentication error in authorizer: {e}")
-        # Raising an exception will cause a 500 Internal Server Error response
-        # from API Gateway. For security, it's better to return a Deny policy.
-        return _generate_policy('user', 'Deny', event['methodArn'])
+    logger.warning("Invalid username or password")
+    raise Unauthorized
 
 
 def find_hosted_zone_id(hostname):
-    """
-    Finds the Hosted Zone ID that best matches the given hostname.
-    It returns the ID of the longest matching public hosted zone.
-    """
+    """Return the ID of the longest public hosted zone that contains hostname."""
     paginator = route53.get_paginator('list_hosted_zones')
-    response_iterator = paginator.paginate()
-
     best_match_id = None
     best_match_length = 0
-    # Ensure hostname ends with a dot for consistent comparison with Route 53 zone names
-    normalized_hostname = hostname if hostname.endswith('.') else f"{hostname}."
+    normalized = f"{hostname}."
 
-    for page in response_iterator:
+    for page in paginator.paginate():
         for zone in page['HostedZones']:
-            # We are only interested in public hosted zones
             if zone['Config']['PrivateZone']:
                 continue
-
-            zone_name = zone['Name']
-            # Check if the hostname ends with the zone name
-            if normalized_hostname.endswith(zone_name):
-                # The longer the zone name, the more specific the match
-                if len(zone_name) > best_match_length:
-                    best_match_length = len(zone_name)
-                    best_match_id = zone['Id'].split('/')[-1] # Extract just the ID
+            zone_name = zone['Name'].lower()
+            # Match on a label boundary so "badexample.com." never matches "example.com."
+            if (normalized == zone_name or normalized.endswith('.' + zone_name)) \
+                    and len(zone_name) > best_match_length:
+                best_match_length = len(zone_name)
+                best_match_id = zone['Id'].split('/')[-1]
 
     if best_match_id:
-        logger.info(f"Found best matching hosted zone ID '{best_match_id}' for hostname '{hostname}'")
+        logger.info(f"Found hosted zone '{best_match_id}' for '{hostname}'")
     else:
-        logger.warning(f"No suitable hosted zone found for hostname '{hostname}'")
+        logger.warning(f"No public hosted zone found for '{hostname}'")
     return best_match_id
 
+
 def lambda_handler(event, context):
-    """
-    Updates a Route 53 'A' record, emulating a No-IP compatible DDNS provider.
-    """
-    logger.info(f"Received event: {json.dumps(event)}")
+    """Update a Route 53 'A' record, emulating a No-IP compatible DDNS provider."""
+    headers = _headers_lower(event)
+    params = event.get('queryStringParameters') or {}
+    logger.info(
+        "Update request: path=%s hostname=%s myip=%s",
+        event.get('path'), params.get('hostname'), params.get('myip'),
+    )
 
-    headers_lower = {k.lower(): v for k, v in event.get('headers', {}).items()}
-
-    # --- 1. User-Agent Check ---
-    user_agent = headers_lower.get('user-agent')
-    if not user_agent:
+    if not headers.get('user-agent'):
         logger.warning("Missing User-Agent header")
         return {'statusCode': 400, 'body': 'badagent'}
 
+    allowed_hostname = _normalize_hostname(os.environ.get('DDNS_HOSTNAME'))
+    if not allowed_hostname:
+        logger.error("DDNS_HOSTNAME is not configured or invalid")
+        return {'statusCode': 500, 'body': '911'}
 
-    # --- 2. Get Parameters ---
-    hostname = None
-    new_ip = None
-    params = event.get('queryStringParameters') if event.get('queryStringParameters') is not None else {}
-    
-    # Standard dyndns2 behavior: get 'hostname' from query params
-    hostname = params.get('hostname')
-    
-    # Fallback for inadyn custom type: parse from path
-    # e.g., path can be /update/your.hostname.com or /updatedrohalloran.net from user log
-    if not hostname:
-        path = event.get('path', '')
-        # This regex will look for a domain name-like string in the path
-        match = re.search(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', path)
-        if match:
-            hostname = match.group(1)
-            logger.info(f"Extracted hostname '{hostname}' from path '{path}'")
+    # Standard dyndns2: 'hostname' query param. Fallback (inadyn custom): parse from path.
+    raw_hostname = params.get('hostname')
+    if not raw_hostname:
+        match = _PATH_HOSTNAME_RE.search(event.get('path') or '')
+        raw_hostname = match.group(1) if match else None
 
-    # Get IP address
-    # Inadyn can send 'myip' in query string
-    # Also handle source IP from API Gateway context
-    new_ip = params.get('myip', event.get('requestContext', {}).get('identity', {}).get('sourceIp'))
+    raw_ip = params.get('myip') or (event.get('requestContext') or {}).get('identity', {}).get('sourceIp')
 
-    if not hostname or not new_ip:
-        error_msg = "Missing 'hostname' or 'myip' parameters."
-        logger.error(error_msg)
+    if not raw_hostname or not raw_ip:
+        logger.error("Missing 'hostname' or 'myip' parameters")
         return {'statusCode': 400, 'body': 'badreq'}
 
-    # Dynamically find the Hosted Zone ID
+    hostname = _normalize_hostname(raw_hostname)
+    if hostname != allowed_hostname:
+        logger.warning("Refusing update for hostname that is not configured")
+        return {'statusCode': 400, 'body': 'nohost'}
+
+    try:
+        new_ip = str(ipaddress.IPv4Address(raw_ip))
+    except (ipaddress.AddressValueError, ValueError):
+        logger.warning("Invalid IPv4 address in request")
+        return {'statusCode': 400, 'body': 'badreq'}
+
     hosted_zone_id = find_hosted_zone_id(hostname)
     if not hosted_zone_id:
-        logger.error(f"Could not determine Hosted Zone ID for hostname: {hostname}")
-        return {'statusCode': 500, 'body': '911'} # Internal server error
+        return {'statusCode': 500, 'body': '911'}
 
-    # --- 3. Check Current DNS Record ---
     try:
         response = route53.list_resource_record_sets(
             HostedZoneId=hosted_zone_id,
             StartRecordName=hostname,
             StartRecordType='A',
-            MaxItems='1'
+            MaxItems='1',
         )
         record_sets = response.get('ResourceRecordSets', [])
-        # Ensure the record found is an exact match for the hostname
-        if record_sets and record_sets[0]['Name'] == f"{hostname}.":
+        if record_sets and record_sets[0]['Name'].lower() == f"{hostname}." \
+                and record_sets[0].get('Type') == 'A':
             current_ip = record_sets[0]['ResourceRecords'][0]['Value']
             if current_ip == new_ip:
-                logger.info(f"IP address for {hostname} is already {new_ip}. No change needed.")
+                logger.info(f"{hostname} is already {new_ip}; no change")
                 return {'statusCode': 200, 'body': f"nochg {new_ip}"}
     except Exception as e:
-        logger.warning(f"Could not retrieve current DNS record for {hostname}: {e}")
-        # Proceed to update anyway
+        logger.warning(f"Could not read current record for {hostname}: {e}")
 
-    # --- 4. Update DNS Record ---
-    logger.info(f"Attempting to update {hostname} to {new_ip} in zone {hosted_zone_id}")
+    logger.info(f"Updating {hostname} to {new_ip} in zone {hosted_zone_id}")
     try:
         route53.change_resource_record_sets(
             HostedZoneId=hosted_zone_id,
             ChangeBatch={
-                'Comment': 'Dynamic DNS update from UniFi',
-                'Changes': [
-                    {
-                        'Action': 'UPSERT',
-                        'ResourceRecordSet': {
-                            'Name': hostname,
-                            'Type': 'A',
-                            'TTL': 300,
-                            'ResourceRecords': [{'Value': new_ip}],
-                        },
-                    }
-                ],
+                'Comment': 'Dynamic DNS update',
+                'Changes': [{
+                    'Action': 'UPSERT',
+                    'ResourceRecordSet': {
+                        'Name': hostname,
+                        'Type': 'A',
+                        'TTL': 300,
+                        'ResourceRecords': [{'Value': new_ip}],
+                    },
+                }],
             },
         )
-        logger.info(f"Route 53 update successful for {hostname} to {new_ip}")
         return {'statusCode': 200, 'body': f"good {new_ip}"}
-
     except Exception as e:
         logger.error(f"Route 53 update failed: {e}")
         return {'statusCode': 500, 'body': '911'}

@@ -1,6 +1,6 @@
 # Serverless Dynamic DNS (DDNS) for UniFi & Inadyn Clients
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python](https://img.shields.io/badge/python-3.x-blue.svg) ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20%7C%20API%20Gateway%20%7C%20Route%2053-orange.svg) ![Serverless Framework](https://img.shields.io/badge/IaC-Serverless%20Framework-red.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python](https://img.shields.io/badge/python-3.11-blue.svg) ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20%7C%20API%20Gateway%20%7C%20Route%2053-orange.svg) ![Serverless Framework](https://img.shields.io/badge/IaC-Serverless%20Framework-red.svg)
 
 > Self-hosted dynamic DNS for UniFi Dream Machine (UDM, UDM Pro, UDR, UCG) and USG gateways using AWS Route 53, with no DDNS subscription, no container and no script on your network. A serverless No-IP-compatible endpoint (Lambda + API Gateway + Secrets Manager) that also works with any inadyn client. It's a free alternative to No-IP, DynDNS and DuckDNS for people who already host their domain in Route 53.
 
@@ -11,7 +11,7 @@ Instead of running a client script on your local network, your UniFi gateway can
 ## Features
 
 *   **Serverless**: No servers to manage. The solution runs entirely on API Gateway and Lambda.
-*   **Secure**: Authentication is handled by the Lambda function using credentials securely stored in **AWS Secrets Manager**.
+*   **Secure**: HTTP Basic credentials are checked by a Lambda authorizer against a generated password in **AWS Secrets Manager**. Only the one configured hostname can be updated, and the IAM role enforces that limit too.
 *   **UniFi Native**: Works directly with the Dynamic DNS configuration in the UniFi Network application. No custom scripts or containers needed on your network.
 *   **Infrastructure as Code**: All AWS resources (Lambda, API Gateway, IAM Roles, Secrets Manager Secret) are defined and deployed using the Serverless Framework.
 
@@ -21,11 +21,11 @@ Instead of running a client script on your local network, your UniFi gateway can
 2.  **DDNS Update Request**: The UniFi device sends a No-IP compatible `GET` request to your secure API Gateway endpoint. The request includes a Basic Auth header with your DDNS username and password.
 3.  **API Gateway**: Receives the request and triggers the AWS Lambda function.
 4.  **AWS Lambda**: The Python Lambda function (`src/handler.py`) performs the following steps:
-    *   Retrieves the secure credentials from **AWS Secrets Manager**.
-    *   Validates the Basic Auth header from the request against the stored credentials.
+    *   A Lambda **authorizer** validates the Basic Auth header against credentials in **AWS Secrets Manager** (constant-time comparison; failures return `401`).
+    *   The update function checks that the hostname matches the configured one and that the IP is a valid IPv4 address.
     *   Checks the current IP address in Route 53 to avoid unnecessary updates.
     *   If the IP has changed, it uses `boto3` to update the specified 'A' record in your Route 53 Hosted Zone.
-    *   Returns a No-IP compatible response code (e.g., `good`, `nochg`, `badauth`) that the UniFi client understands.
+    *   Returns a No-IP compatible response code (e.g., `good`, `nochg`, `nohost`, `badreq`) that the UniFi client understands.
 
 ## Prerequisites
 
@@ -40,80 +40,47 @@ Before you begin, ensure you have the following installed:
     ```bash
     aws configure
     ```
-*   **Python 3.x**: Required for the Lambda runtime.
+*   **Python 3.11+**: Matches the Lambda runtime; needed only to run the tests.
 
 ## Configuration and Deployment
 
-### Step 1: Configure `serverless.yml`
+### Step 1: Deploy
 
-Open the `serverless.yml` file. You must update two sections:
+Two parameters are required:
 
-1.  **`custom` section**:
-    ```yaml
-    custom:
-      hostname: '${param:hostName}'     # <-- IMPORTANT: Replace with the FQDN you want to update
-    ```
-    *   **`hostname`**: The full domain name (e.g., `ddns.example.com`) for your serverless DDNS setup that the Lambda will update. The Hosted Zone ID will be dynamically determined by the Lambda function based on this hostname.
-
-2.  **`resources` section (Credentials)**:
-    This section defines the AWS Secrets Manager secret that will store your DDNS credentials. The `SecretString` will now dynamically fetch the username and password, ideally passed in at deploy time.
-
-    ```yaml
-    resources:
-      Resources:
-        DDNSCredentialsSecret:
-          Type: AWS::SecretsManager::Secret
-          Properties:
-            # ...
-            SecretString: '{"username": "${param:ddnsUsername}", "password": "${param:ddnsPassword}"}' # <-- IMPORTANT: Credentials passed at deploy time
-    ```
-
-### Step 2: Deploy the AWS Resources with Credentials
-
-Instead of hardcoding your username and password, you can pass them securely during deployment using either command-line parameters or environment variables.
-
-#### Option A: Using Command-Line Parameters (Recommended for manual deployments)
-
-Pass the credentials directly in the `serverless deploy` command using the `--param` flag.
+*   **`hostName`**: the fully qualified name to update, lowercase and without a trailing dot (e.g. `home.example.com`). Its parent zone must be a public hosted zone in the same AWS account. **This is the only record the endpoint can change.** Requests for any other hostname are refused (`nohost`), and the Lambda's IAM role can only `UPSERT` an `A` record with this exact name.
+*   **`ddnsUsername`**: the username your gateway will send.
 
 ```bash
 serverless deploy \
-  --param="hostName=your.domain.com" \
-  --param="ddnsUsername=your_real_username" \
-  --param="ddnsPassword=your_super_secret_password"
+  --param="hostName=home.example.com" \
+  --param="ddnsUsername=your_username"
 ```
 
-#### Option B: Using Environment Variables (Recommended for CI/CD and automation)
+You do not choose the password. Secrets Manager generates a 32-character one during the first deploy, so it never appears in `serverless.yml`, the CloudFormation template, or the deployment bucket.
 
-Set local environment variables in your shell before running the deploy command.
+### Step 2: Retrieve the Generated Password
 
 ```bash
-export HOST_NAME="your.domain.com"
-export DDNS_USERNAME="your_real_username"
-export DDNS_PASSWORD="your_super_secret_password"
-serverless deploy
+aws secretsmanager get-secret-value \
+  --secret-id /ddns/aws-python-ddns/dev \
+  --query SecretString --output text
 ```
-*Note: Ensure your shell environment variables are not committed to version control.*
 
-### Step 3: Secure Your Credentials (Recommended)
+To use your own password instead, run `aws secretsmanager put-secret-value` against the same secret. Later deploys won't overwrite it. The authorizer caches credentials for up to 5 minutes, so a new password can take that long to take effect.
 
-For enhanced security, you should update your secret directly in the AWS console after the first deployment and remove the hardcoded `SecretString` from `serverless.yml`.
+> **Upgrading from an earlier version?** Earlier versions passed `ddnsPassword` as a deploy parameter, which stored it in plaintext in the CloudFormation template. The first deploy of this version replaces it with a generated password, so retrieve the new one (above) and update your gateway. The `ddnsPassword` parameter is no longer used.
 
-1.  Go to the [AWS Secrets Manager console](https://console.aws.amazon.com/secretsmanager/).
-2.  Find the secret named `/ddns/aws-python-ddns/dev` (the name is based on the `serverless.yml` configuration).
-3.  Click "Retrieve secret value" and then "Edit". Update the username and password.
-4.  (Optional but recommended) Go back to `serverless.yml`, remove the `SecretString` line from the `DDNSCredentialsSecret` resource, and redeploy. This ensures your password is not stored in your template file.
-
-### Step 4: Configure Your UniFi Gateway
+### Step 3: Configure Your UniFi Gateway
 
 In your UniFi Network application, navigate to **Settings > Internet > [Your WAN Network] > Dynamic DNS**. Create a new Dynamic DNS entry with the following settings:
 
 *   **Service**: Select `noip`.
-*   **Hostname**: The hostname you configured in `serverless.yml` (e.g., `home.yourdomain.com`).
-*   **Username**: The username you set in your AWS Secret.
-*   **Password**: The password you set in your AWS Secret.
+*   **Hostname**: The `hostName` you deployed with (e.g., `home.example.com`).
+*   **Username**: The `ddnsUsername` you deployed with.
+*   **Password**: The password from Step 2.
 *   **Server**: The server part of your API Gateway endpoint URL, including the path. **Do not include `https://`**.
-    *   Example: `adu4crry4l.execute-api.us-east-1.amazonaws.com/dev/update`
+    *   Example: `abc123defg.execute-api.us-east-1.amazonaws.com/dev/update`
 
 Save the settings. Your UniFi gateway will now automatically update your Route 53 record whenever its public IP changes.
 
@@ -121,7 +88,7 @@ Save the settings. Your UniFi gateway will now automatically update your Route 5
 
 If you are using `inadyn` directly (e.g., on a device that supports a custom provider configuration), you can use a configuration similar to this. This example leverages the `%h` (hostname) and `%i` (IP address) variables provided by `inadyn` in the `ddns-path`.
 
-Replace `YOUR_API_GATEWAY_ENDPOINT`, `your.example.com`, `your_username`, and `your_password` with your actual values. Remember that `YOUR_API_GATEWAY_ENDPOINT` should be the full domain of your API Gateway (e.g., `u679stz5ig.execute-api.us-east-1.amazonaws.com`).
+Replace `YOUR_API_GATEWAY_ENDPOINT`, `your.example.com`, `your_username`, and `your_password` with your actual values. Remember that `YOUR_API_GATEWAY_ENDPOINT` should be the full domain of your API Gateway (e.g., `abc123defg.execute-api.us-east-1.amazonaws.com`).
 
 ```ini
 custom https://YOUR_API_GATEWAY_ENDPOINT {
@@ -158,7 +125,7 @@ curl -v -X GET \
   -H 'User-Agent: YourApp/1.0'
 ```
 
-You should receive a response like `good 8.8.8.8` if the update was successful, or `nochg 8.8.8.8` if the IP address was already up to date.
+You should receive a response like `good 192.0.2.1` if the update was successful, or `nochg 192.0.2.1` if the IP address was already up to date.
 
 ## Project Origin and References
 
@@ -167,6 +134,22 @@ This project is inspired by and compatible with `inadyn`, a small and simple Dyn
 *   **inadyn Project Home**: [https://troglobit.com/projects/inadyn/](https://troglobit.com/projects/inadyn/)
 *   **inadyn GitHub Repository**: [https://github.com/troglobit/inadyn](https://github.com/troglobit/inadyn)
 *   **inadyn Custom Providers Documentation**: [https://github.com/troglobit/inadyn?tab=readme-ov-file#custom-ddns-providers](https://github.com/troglobit/inadyn?tab=readme-ov-file#custom-ddns-providers)
+
+## Security
+
+*   Only IPv4 `A` records are supported. `myip` must be a valid IPv4 address; if it is omitted, the caller's source IP is used.
+*   Request events are never logged in full, so credentials stay out of CloudWatch. Logs are kept for 30 days.
+*   Everyone with the URL can attempt to log in. Use a long password (the generated one is fine) and consider adding [API Gateway throttling](https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-throttling.html) or AWS WAF rate limiting.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Development
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest && ruff check .
+```
 
 ## Cleaning Up
 

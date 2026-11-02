@@ -15,3 +15,12 @@ __pycache__/
 
 # Client-side specific (from old solution)
 client/
+
+# Python tooling
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# Local run output
+tmp/
