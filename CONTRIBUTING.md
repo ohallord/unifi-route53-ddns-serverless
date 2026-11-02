@@ -6,6 +6,10 @@ This document outlines the guidelines for contributing to this project.
 
 ## How Can I Contribute?
 
+### 🔒 Security Issues
+
+Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not as a public issue.
+
 ### 💡 Reporting Bugs
 
 If you find a bug, please help us by [opening an issue](https://github.com/ohallord/unifi-route53-ddns-serverless/issues/new?assignees=&labels=bug&projects=&template=bug_report.md&title=). Before submitting a bug report, please check the existing issues to see if your problem has already been reported.
@@ -34,7 +38,7 @@ We welcome code contributions! If you'd like to contribute code, please follow t
 2.  **Fork the Repository**: Fork this repository to your own GitHub account.
 3.  **Create a New Branch**: Create a new branch for your changes (e.g., `feature/your-feature-name` or `fix/bug-description`).
 4.  **Make Your Changes**: Implement your changes, ensuring your code adheres to the existing style and conventions.
-5.  **Test Your Changes**: If applicable, ensure your changes are tested.
+5.  **Test Your Changes**: Add or update tests in `tests/` and run `pytest && ruff check . && bandit -q -r src` (see the README Development section). CI runs the same checks.
 6.  **Commit Your Changes**: Write clear, concise commit messages.
 7.  **Submit a Pull Request**: Push your branch to your fork and open a Pull Request against the `main` branch of this repository.
 
