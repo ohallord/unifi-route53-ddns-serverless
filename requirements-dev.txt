@@ -1,4 +1,4 @@
 boto3>=1.43.122
-pytest>=8
+pytest>=9.2.0
 ruff>=0.6
 bandit>=1.7
