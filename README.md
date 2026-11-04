@@ -64,7 +64,7 @@ custom https://YOUR_API_GATEWAY_ENDPOINT {
 }
 ```
 
-`YOUR_API_GATEWAY_ENDPOINT` is just the domain, for example `abc123defg.execute-api.us-east-1.amazonaws.com`. `%h` and `%i` are inadyn's hostname and IP variables.
+`YOUR_API_GATEWAY_ENDPOINT` is the domain only, for example `abc123defg.execute-api.us-east-1.amazonaws.com`. `%h` and `%i` are inadyn's hostname and IP variables.
 
 ## Testing with curl
 
@@ -81,17 +81,29 @@ You should get `good 192.0.2.1` on a change or `nochg 192.0.2.1` if the record a
 
 Most of the work went into keeping a public endpoint from becoming a way to change DNS records.
 
-**One record only.** The function refuses any hostname except the one set at deploy time and returns `nohost`. The IAM role enforces the same limit on its own: it can only `UPSERT` an `A` record with that exact name. A bug in the code still couldn't touch other records in the zone.
+### One record only
 
-**No password in the template.** Secrets Manager generates a 32-character password during the first deploy. It never appears in `serverless.yml`, the CloudFormation template or the deployment bucket. Later deploys don't regenerate it. To use your own password, run `aws secretsmanager put-secret-value` against the same secret.
+The function refuses any hostname except the one set at deploy time and returns `nohost`. The IAM role enforces the same limit on its own: it can only `UPSERT` an `A` record with that exact name. A bug in the code still couldn't touch other records in the zone.
 
-**Auth happens before the update code runs.** A Lambda authorizer checks credentials with a constant-time comparison and returns `401` on failure. It caches results for 5 minutes, so a password change can take that long to take effect. The cached policy covers the whole stage, so a cached allow still works on any path.
+### No password in the template
 
-**Careful logging.** Full request events are never logged, so credentials stay out of CloudWatch. Logs are kept for 30 days.
+Secrets Manager generates a 32-character password during the first deploy. It never appears in `serverless.yml`, the CloudFormation template or the deployment bucket. Later deploys don't regenerate it. To use your own password, run `aws secretsmanager put-secret-value` against the same secret.
 
-**Correct zone matching.** The function finds the hosted zone by the longest match on a label boundary, skipping private zones. That way `badexample.com` can never match `example.com`.
+### Auth runs before the update code
 
-**No unnecessary writes.** It reads the current record and skips the Route 53 change if the IP is already correct.
+A Lambda authorizer checks credentials with a constant-time comparison and returns `401` on failure. It caches results for 5 minutes, so a password change can take that long to take effect. The cached policy covers the whole stage, so a cached allow still works on any path.
+
+### Logging
+
+Full request events are never logged, so credentials stay out of CloudWatch. Logs are kept for 30 days.
+
+### Zone matching
+
+The function finds the hosted zone by the longest match on a label boundary, skipping private zones. That way `badexample.com` can never match `example.com`.
+
+### No unnecessary writes
+
+It reads the current record and skips the Route 53 change if the IP is already correct.
 
 ## Known limits
 
@@ -124,6 +136,10 @@ serverless remove
 
 This deletes the stack, including the Lambda functions, API Gateway and the secret.
 
-## Security and credits
+## Reporting a vulnerability
 
-To report a vulnerability, see [SECURITY.md](SECURITY.md). Protocol compatibility is based on [inadyn](https://github.com/troglobit/inadyn) and its [custom provider docs](https://github.com/troglobit/inadyn?tab=readme-ov-file#custom-ddns-providers).
+See [SECURITY.md](SECURITY.md).
+
+## Credits
+
+Protocol compatibility is based on [inadyn](https://github.com/troglobit/inadyn) and its [custom provider docs](https://github.com/troglobit/inadyn?tab=readme-ov-file#custom-ddns-providers).
