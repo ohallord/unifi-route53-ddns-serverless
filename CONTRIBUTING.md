@@ -8,7 +8,7 @@ This document outlines the guidelines for contributing to this project.
 
 ### 🔒 Security Issues
 
-Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not as a public issue.
+Please report vulnerabilities privately as described in the [shared security policy](https://github.com/ohallord/.github/blob/main/SECURITY.md), not as a public issue.
 
 ### 💡 Reporting Bugs
 
