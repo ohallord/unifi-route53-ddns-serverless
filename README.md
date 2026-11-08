@@ -138,7 +138,9 @@ This deletes the stack, including the Lambda functions, API Gateway and the secr
 
 ## Reporting a vulnerability
 
-See [SECURITY.md](SECURITY.md).
+Report it privately through [private vulnerability reporting](https://github.com/ohallord/unifi-route53-ddns-serverless/security/advisories/new), as described in the [shared security policy](https://github.com/ohallord/.github/blob/main/SECURITY.md).
+
+This project deploys into your own AWS account. Your account configuration, how you store your gateway's credentials, and the security of UniFi or inadyn are out of scope.
 
 ## Credits
 
